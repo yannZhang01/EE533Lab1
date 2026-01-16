@@ -2,11 +2,16 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
-#include <pthread.h>
+#include <signal.h>
+#include <sys/wait.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
+
+static int active_connections = 0;
+static int total_connections = 0;
 
 static void die(const char *msg)
 {
@@ -14,33 +19,40 @@ static void die(const char *msg)
     exit(EXIT_FAILURE);
 }
 
-static void *handle_client_thread(void *arg)
+static void handle_sigchld(int sig)
 {
-    int client_fd = *(int *)arg;
-    free(arg);
-    
+    while (waitpid(-1, NULL, WNOHANG) > 0);
+}
+
+static void handle_client(int client_fd)
+{
     char buffer[256];
 
-    memset(buffer, 0, sizeof(buffer));
-    ssize_t n = read(client_fd, buffer, sizeof(buffer) - 1);
-    if (n < 0) {
-        perror("ERROR reading from socket");
-        close(client_fd);
-        return NULL;
-    }
+    while (1) {
+        memset(buffer, 0, sizeof(buffer));
+        ssize_t n = read(client_fd, buffer, sizeof(buffer) - 1);
+        if (n < 0) {
+            perror("ERROR reading from socket");
+            close(client_fd);
+            exit(EXIT_FAILURE);
+        }
+        if (n == 0) {
+            printf("Client closed connection\n");
+            break;
+        }
 
-    printf("Here is the message: %s\n", buffer);
+        printf("Here is the message: %s\n", buffer);
 
-    const char *reply = "I got your message";
-    n = write(client_fd, reply, (int)strlen(reply));
-    if (n < 0) {
-        perror("ERROR writing to socket");
-        close(client_fd);
-        return NULL;
+        const char *reply = "I got your message";
+        n = write(client_fd, reply, (int)strlen(reply));
+        if (n < 0) {
+            perror("ERROR writing to socket");
+            close(client_fd);
+            exit(EXIT_FAILURE);
+        }
     }
 
     close(client_fd);
-    return NULL;
 }
 
 int main(int argc, char *argv[])
@@ -77,6 +89,9 @@ int main(int argc, char *argv[])
 
     printf("Server listening on port %d...\n", portno);
 
+    // Handle zombie processes
+    signal(SIGCHLD, handle_sigchld);
+
     while (1) {
         struct sockaddr_in cli_addr;
         socklen_t clilen = (socklen_t)sizeof(cli_addr);
@@ -87,23 +102,29 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        pthread_t thread_id;
-        int *client_fd_ptr = malloc(sizeof(int));
-        if (client_fd_ptr == NULL) {
-            perror("malloc failed");
-            close(client_fd);
-            continue;
-        }
-        *client_fd_ptr = client_fd;
+        active_connections++;
+        total_connections++;
+        printf("[Connection %d] Client connected - Socket FD: %d, Client IP: %s, Client Port: %d | Active: %d\n", 
+               total_connections, client_fd, inet_ntoa(cli_addr.sin_addr), ntohs(cli_addr.sin_port), active_connections);
 
-        if (pthread_create(&thread_id, NULL, handle_client_thread, client_fd_ptr) != 0) {
-            perror("pthread_create failed");
-            free(client_fd_ptr);
+        pid_t pid = fork();
+        if (pid < 0) {
+            perror("ERROR on fork");
             close(client_fd);
+            active_connections--;
             continue;
         }
 
-        pthread_detach(thread_id);
+        if (pid == 0) {
+            // Child process
+            close(sockfd);  // Child doesn't need the listening socket
+            handle_client(client_fd);
+            exit(EXIT_SUCCESS);
+        } else {
+            // Parent process
+            close(client_fd);  // Parent doesn't need this connection
+            active_connections--;
+        }
     }
 
     close(sockfd);
