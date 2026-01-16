@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include <pthread.h>
 
 #include <sys/types.h>
 #include <sys/socket.h>
@@ -13,15 +14,19 @@ static void die(const char *msg)
     exit(EXIT_FAILURE);
 }
 
-static void handle_client(int client_fd)
+static void *handle_client_thread(void *arg)
 {
+    int client_fd = *(int *)arg;
+    free(arg);
+    
     char buffer[256];
 
     memset(buffer, 0, sizeof(buffer));
     ssize_t n = read(client_fd, buffer, sizeof(buffer) - 1);
     if (n < 0) {
         perror("ERROR reading from socket");
-        return;
+        close(client_fd);
+        return NULL;
     }
 
     printf("Here is the message: %s\n", buffer);
@@ -30,8 +35,12 @@ static void handle_client(int client_fd)
     n = write(client_fd, reply, (int)strlen(reply));
     if (n < 0) {
         perror("ERROR writing to socket");
-        return;
+        close(client_fd);
+        return NULL;
     }
+
+    close(client_fd);
+    return NULL;
 }
 
 int main(int argc, char *argv[])
@@ -78,8 +87,23 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        handle_client(client_fd);
-        close(client_fd);
+        pthread_t thread_id;
+        int *client_fd_ptr = malloc(sizeof(int));
+        if (client_fd_ptr == NULL) {
+            perror("malloc failed");
+            close(client_fd);
+            continue;
+        }
+        *client_fd_ptr = client_fd;
+
+        if (pthread_create(&thread_id, NULL, handle_client_thread, client_fd_ptr) != 0) {
+            perror("pthread_create failed");
+            free(client_fd_ptr);
+            close(client_fd);
+            continue;
+        }
+
+        pthread_detach(thread_id);
     }
 
     close(sockfd);
