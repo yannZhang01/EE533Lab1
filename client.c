@@ -52,22 +52,39 @@ int main(int argc, char *argv[])
     if (connect(sockfd, (struct sockaddr *)&serv_addr, sizeof(serv_addr)) < 0)
         die("ERROR connecting");
 
-    printf("Please enter the message: ");
-    memset(buffer, 0, sizeof(buffer));
-    if (fgets(buffer, (int)sizeof(buffer), stdin) == NULL) {
-        fprintf(stderr, "ERROR reading input\n");
-        close(sockfd);
-        return EXIT_FAILURE;
+    printf("Connected to server. Enter messages (type 'quit' to exit):\n");
+
+    while (1) {
+        printf("Please enter the message: ");
+        memset(buffer, 0, sizeof(buffer));
+        if (fgets(buffer, (int)sizeof(buffer), stdin) == NULL) {
+            fprintf(stderr, "ERROR reading input\n");
+            break;
+        }
+
+        size_t len = strlen(buffer);
+        if (len > 0 && buffer[len-1] == '\n') {
+            buffer[len-1] = '\0';
+        }
+
+        if (strcmp(buffer, "quit") == 0) {
+            printf("Disconnecting...\n");
+            break;
+        }
+
+        ssize_t n = write(sockfd, buffer, (int)strlen(buffer));
+        if (n < 0) die("ERROR writing to socket");
+
+        memset(buffer, 0, sizeof(buffer));
+        n = read(sockfd, buffer, sizeof(buffer) - 1);
+        if (n < 0) die("ERROR reading from socket");
+        if (n == 0) {
+            printf("Server closed connection\n");
+            break;
+        }
+
+        printf("Server reply: %s\n", buffer);
     }
-
-    ssize_t n = write(sockfd, buffer, (int)strlen(buffer));
-    if (n < 0) die("ERROR writing to socket");
-
-    memset(buffer, 0, sizeof(buffer));
-    n = read(sockfd, buffer, sizeof(buffer) - 1);
-    if (n < 0) die("ERROR reading from socket");
-
-    printf("%s\n", buffer);
 
     close(sockfd);
     return 0;
